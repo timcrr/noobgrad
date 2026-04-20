@@ -51,7 +51,7 @@ epochs = 400
 
 def one_hot(idx, num_classes=4):
     vec = [0.0] * num_classes
-    vec[int(idx)] = 1.0
+    vec[int(idx[0])] = 1.0
     return vec
 
 def train_step(x, y):
