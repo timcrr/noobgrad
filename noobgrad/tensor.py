@@ -83,9 +83,11 @@ class Value:
         return other + (-self)
     
     def __truediv__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
         return self * other**-1
     
     def __rtruediv__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
         return other * self**-1
     
     def __repr__(self):

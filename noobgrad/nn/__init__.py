@@ -12,9 +12,8 @@ class Neuron(Module):
         self.w = [Value(np.random.uniform(-1, 1)) for _ in range(nin)]
         self.b = Value(0.0)
     
-    def __call__(self, x):
-        act = sum((wi * xi for wi, xi in zip(self.w, x)), self.b)
-        return act.sigmoid()
+    def __call__(self, x: Value) -> Value:
+        return sum((wi * xi for wi, xi in zip(self.w, x)), self.b)
     
     def parameters(self):
         return self.w + [self.b]
@@ -23,7 +22,7 @@ class Linear(Module):
     def __init__(self, nin, nout):
         self.neurons = [Neuron(nin) for _ in range(nout)]
     
-    def __call__(self, x):
+    def __call__(self, x: Value) -> list[Value]:
         out = [n(x) for n in self.neurons]
         return out[0] if len(out) == 1 else out
     
@@ -45,3 +44,8 @@ class SGD(Module):
 class MSE(Module):
     def __call__(self, logits, targets):
         return sum((logit - t) ** 2 for logit, t in zip(logits, targets))
+
+class Sigmoid(Module):
+    def __call__(self, x: list[Value]) -> list[Value]:
+        if isinstance(x, list): return [xi.sigmoid() for xi in x]
+        return x.sigmoid()

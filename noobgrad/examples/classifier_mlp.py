@@ -1,8 +1,9 @@
 import numpy as np
+import random
 import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
 
-from noobgrad.nn import Linear, SGD, MSE
+from noobgrad import nn
 
 n = 20
 n2 = n * n
@@ -32,23 +33,29 @@ cls4_y = np.full((n2, 1), 3)
 x_np = np.vstack([cls1_x, cls2_x, cls3_x, cls4_x])
 y_np = np.vstack([cls1_y, cls2_y, cls3_y, cls4_y])
 
+dloader = [[xs, ys] for xs, ys in zip(x_np, y_np)]
+random.shuffle(dloader)
+
 class MLP:
     def __init__(self):
-        self.fc1 = Linear(2, 10)
-        self.fc2 = Linear(10, 4)
+        self.fc1 = nn.Linear(2, 10)
+        self.fc2 = nn.Linear(10, 4)
+        self.hidden_act = nn.Sigmoid()
     
     def __call__(self, x):
         x = self.fc1(x)
+        x = self.hidden_act(x)
         x = self.fc2(x)
+        x = self.hidden_act(x)
         return x
     
     def parameters(self):
         return self.fc1.parameters() + self.fc2.parameters()
 
 model = MLP()
-criterion = MSE()
-optim = SGD(model.parameters(), lr=5e-3)
-epochs = 40
+criterion = nn.MSE()
+optim = nn.SGD(model.parameters(), lr=5e-3)
+epochs = 20
 
 def one_hot(idx, num_classes=4):
     vec = [0.0] * num_classes
@@ -65,7 +72,7 @@ def train_step(x, y):
     return loss
 
 for epoch in range(epochs):
-    for x, y in tqdm(zip(x_np, y_np), total=len(x_np)):
+    for x, y in tqdm(dloader, total=len(x_np)):
         loss = train_step(x, y)
     print(f"epoch [{epoch+1}/{epochs}] loss={loss:.4f}")
 
