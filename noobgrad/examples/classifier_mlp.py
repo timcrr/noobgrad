@@ -2,9 +2,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
 
-from noobgrad.nn import Linear, SGD
+from noobgrad.nn import Linear, SGD, MSE
 
-n = 10
+n = 20
 n2 = n * n
 
 cls1_x1 = np.random.rand(n2)
@@ -46,8 +46,9 @@ class MLP:
         return self.fc1.parameters() + self.fc2.parameters()
 
 model = MLP()
-optim = SGD(model.parameters(), lr=1e-3)
-epochs = 400
+criterion = MSE()
+optim = SGD(model.parameters(), lr=5e-3)
+epochs = 40
 
 def one_hot(idx, num_classes=4):
     vec = [0.0] * num_classes
@@ -57,7 +58,7 @@ def one_hot(idx, num_classes=4):
 def train_step(x, y):
     logits = model(x)
     target = one_hot(y, 4)
-    loss = sum((logit - t) ** 2 for logit, t in zip(logits, target))
+    loss = criterion(logits, target)
     loss.backward()
     optim.step()
     optim.zero_grad()
