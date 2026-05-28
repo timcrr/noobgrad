@@ -2,3 +2,6 @@
 __pycache__/
 noobgrad.egg-info/
 data/
+results/
+.vscode/
+.DS_Store

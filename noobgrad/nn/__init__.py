@@ -1,6 +1,6 @@
 import numpy as np
 
-from noobgrad.tensor import Value
+from noobgrad.tensor import Value, Tensor
 
 class Module:
     def zero_grad(self):
@@ -20,18 +20,20 @@ class Neuron(Module):
 
 class Linear(Module):
     def __init__(self, nin, nout):
-        self.neurons = [Neuron(nin) for _ in range(nout)]
+        limit = 1.0 / np.sqrt(nin)
+        self.W = Tensor(np.random.uniform(-limit, limit, (nin, nout)))
+        self.b = Tensor(np.zeros((1, nout)))
     
-    def __call__(self, x: Value) -> list[Value]:
-        out = [n(x) for n in self.neurons]
-        return out[0] if len(out) == 1 else out
+    def __call__(self, x):
+        x = x if isinstance(x, Tensor) else Tensor(x)
+        return (x.__matmul__(self.W) + self.b).relu()
     
     def parameters(self):
-        return [p for n in self.neurons for p in n.parameters()]
+        return [self.W, self.b]
 
 class SGD(Module):
-    def __init__(self, params, lr=5e-3):
-        self.params = params
+    def __init__(self, params, lr=1e-2):
+        self.params = list(params)
         self.lr = lr
     
     def step(self):
@@ -40,10 +42,14 @@ class SGD(Module):
 
     def parameters(self):
         return self.params
+    
+    def zero_grad(self):
+        for p in self.params:
+            p.grad = np.zeros_like(self.data, dtype=np.float64)
 
 class MSE(Module):
     def __call__(self, logits, targets):
-        return sum((logit - t) ** 2 for logit, t in zip(logits, targets))
+        return sum((logit - t) ** 2 for logit, t in zip(logits.data, targets))
 
 class Sigmoid(Module):
     def __call__(self, x: list[Value]) -> list[Value]:
