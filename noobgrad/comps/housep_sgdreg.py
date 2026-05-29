@@ -10,8 +10,9 @@ plt.close("all")
 
 house = pd.read_csv("/Users/timcr/fun/noobgrad/data/house/train.csv", delimiter=",")
 house_test = pd.read_csv("/Users/timcr/fun/noobgrad/data/house/test.csv", delimiter=",")
-X = house[["LotArea", "OverallQual", "OverallCond", "YearBuilt"]]
-X_test = house_test[["LotArea", "OverallQual", "OverallCond", "YearBuilt"]]
+X = house[["LotArea", "OverallQual", "OverallCond", "YearBuilt", "GrLivArea", "BedroomAbvGr", "TotRmsAbvGrd", "GarageArea"]]
+X_test = house_test[["LotArea", "OverallQual", "OverallCond", "YearBuilt", "GrLivArea", "BedroomAbvGr", "TotRmsAbvGrd", "GarageArea"]]
+X_test = X_test.fillna(value=0)
 y = house["SalePrice"]
 y_log = np.log1p(y)
 scaler = StandardScaler()
@@ -50,7 +51,7 @@ if __name__ == "__main__":
   y_pred = model.predict(X_val)
   log_rmse = root_mean_squared_error(y_val, y_pred)
   print(f"log rmse: {log_rmse:.4f}")
-  # validate(model)
+  validate(model)
   
   '''
   y_pred_log = model.predict(X_val)
