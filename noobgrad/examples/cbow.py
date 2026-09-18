@@ -65,7 +65,7 @@ def main(dset_path: str, dset_split: str, output_file: str, window_size: int, de
         writer.writerow([" ".join(map(str, context)), target])
   return len(voc)
 
-def get_tensorset(csv_file: str, limit: int = -1, delimiter: str=',') -> DataLoader:
+def get_tensorset(csv_file: str, batch_size: int, limit: int = -1, delimiter: str=',') -> DataLoader:
   contexts = []
   targets = []
   with open(csv_file, 'r', encoding='utf-8') as file:
@@ -82,7 +82,7 @@ def get_tensorset(csv_file: str, limit: int = -1, delimiter: str=',') -> DataLoa
   dataset = TensorDataset(contexts, targets)
   if limit != -1:
     dataset = torch.utils.data.Subset(dataset, range(limit))
-  dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
+  dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
   return dataloader
 
 def validate(model, criterion, loader, device):
@@ -117,19 +117,24 @@ if __name__ == "__main__":
   voc_size = main(dset_path, dset_split, output_file, window_size=3)
   print(voc_size) # 62300
   '''
+  import os
   from datetime import datetime
   from pathlib import Path
   name = f"noobgrad/models/cbow_{datetime.now().strftime('%d_%m_%H%M')}"
   Path(name).mkdir(exist_ok=True)
+  print(f"created model's dir {name}")
 
   device = torch.accelerator.current_accelerator().type
-  trainloader = get_tensorset(csv_file='data/wiki_cbow/train.csv')
-  valloader = get_tensorset(csv_file='data/wiki_cbow/validation.csv')
-  testloader = get_tensorset(csv_file='data/wiki_cbow/test.csv')
+  batch_size = int(os.getenv("BS", "64"))
+  epochs = int(os.getenv("EP", "5"))
+  use_val = bool(os.getenv("VAL", "1"))
+
+  trainloader = get_tensorset(csv_file='data/wiki_cbow/train.csv', batch_size=batch_size, limit=10000)
+  valloader = get_tensorset(csv_file='data/wiki_cbow/validation.csv', batch_size=batch_size)
+  testloader = get_tensorset(csv_file='data/wiki_cbow/test.csv', batch_size=batch_size)
   model = CBOW(62300, 300).to(device)
   criterion = nn.CrossEntropyLoss()
   optimizer = optim.Adam(model.parameters(), lr=1e-3)
-  epochs = 5
   print(f"***  using device:  {device}")
   best_val_loss = float('inf')
   for epoch in range(epochs):
@@ -141,11 +146,15 @@ if __name__ == "__main__":
       loss.backward()
       optimizer.step()
       t.set_description(f"***  [{epoch+1}/{epochs}]   loss: {loss.item():.4f}")
-    val_loss = validate(model, criterion, valloader, device)
-    if val_loss < best_val_loss:
-      best_val_loss = val_loss
-      model_path = f'{name}/cbow_{epoch}_{val_loss:.2f}.pth'
-      torch.save(model.state_dict(), model_path)
-      print(f"***  saved best model: ", model_path)
+    if use_val:
+      val_loss = validate(model, criterion, valloader, device)
+      if val_loss < best_val_loss:
+        best_val_loss = val_loss
+        model_path = f'{name}/cbow_{epoch}_{val_loss:.2f}.pth'
+        torch.save(model.state_dict(), model_path)
+        print(f"***  saved best model: ", model_path)
   accuracy = test(model, testloader, device)
+  final_model_path = f'{name}/cbow_final_{accuracy:.2f}.pth'
+  torch.save(model.state_dict(), final_model_path)
+  print(f"model saved to {final_model_path}")
   print(f"***  test accuracy: {accuracy:.4f}")
