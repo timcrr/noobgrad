@@ -120,41 +120,51 @@ if __name__ == "__main__":
   import os
   from datetime import datetime
   from pathlib import Path
-  name = f"noobgrad/models/cbow_{datetime.now().strftime('%d_%m_%H%M')}"
-  Path(name).mkdir(exist_ok=True)
-  print(f"created model's dir {name}")
 
   device = torch.accelerator.current_accelerator().type
   batch_size = int(os.getenv("BS", "64"))
   epochs = int(os.getenv("EP", "5"))
   use_val = bool(os.getenv("VAL", "1"))
+  test_model = bool(os.getenv("TEST", "0"))
+  test_pth = os.getenv("TEST_PATH", "")
 
-  trainloader = get_tensorset(csv_file='data/wiki_cbow/train.csv', batch_size=batch_size, limit=10000)
+  trainloader = get_tensorset(csv_file='data/wiki_cbow/train.csv', batch_size=batch_size)
   valloader = get_tensorset(csv_file='data/wiki_cbow/validation.csv', batch_size=batch_size)
   testloader = get_tensorset(csv_file='data/wiki_cbow/test.csv', batch_size=batch_size)
   model = CBOW(62300, 300).to(device)
   criterion = nn.CrossEntropyLoss()
-  optimizer = optim.Adam(model.parameters(), lr=1e-3)
-  print(f"***  using device:  {device}")
-  best_val_loss = float('inf')
-  for epoch in range(epochs):
-    for X, y in (t:=trange(trainloader)):
-      X, y = X.to(device), y.to(device)
-      logits = model(X)
-      loss = criterion(logits, y)
-      optimizer.zero_grad()
-      loss.backward()
-      optimizer.step()
-      t.set_description(f"***  [{epoch+1}/{epochs}]   loss: {loss.item():.4f}")
-    if use_val:
-      val_loss = validate(model, criterion, valloader, device)
-      if val_loss < best_val_loss:
-        best_val_loss = val_loss
-        model_path = f'{name}/cbow_{epoch}_{val_loss:.2f}.pth'
-        torch.save(model.state_dict(), model_path)
-        print(f"***  saved best model: ", model_path)
-  accuracy = test(model, testloader, device)
-  final_model_path = f'{name}/cbow_final_{accuracy:.2f}.pth'
-  torch.save(model.state_dict(), final_model_path)
-  print(f"model saved to {final_model_path}")
-  print(f"***  test accuracy: {accuracy:.4f}")
+  optimizer = optim.Adam(model.parameters(), lr=5e-3)
+
+  if test_model:
+    state_dict = torch.load(test_pth, weights_only=True)
+    model.load_state_dict(state_dict)
+    accuracy = test(model, testloader, device)
+    print(f"***  test accuracy: {accuracy:.2f}")
+  else:
+    name = f"noobgrad/models/cbow_{datetime.now().strftime('%d_%m_%H%M')}"
+    Path(name).mkdir(exist_ok=True)
+    print(f"created model's dir {name}")
+
+    print(f"***  using device:  {device}")
+    best_val_loss = float('inf')
+    for epoch in range(epochs):
+      for X, y in (t:=trange(trainloader)):
+        X, y = X.to(device), y.to(device)
+        logits = model(X)
+        loss = criterion(logits, y)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        t.set_description(f"***  [{epoch+1}/{epochs}]   loss: {loss.item():.4f}")
+      if use_val:
+        val_loss = validate(model, criterion, valloader, device)
+        if val_loss < best_val_loss:
+          best_val_loss = val_loss
+          model_path = f'{name}/cbow_{epoch}_{val_loss:.2f}.pth'
+          torch.save(model.state_dict(), model_path)
+          print(f"***  saved best model: ", model_path)
+    accuracy = test(model, testloader, device)
+    final_model_path = f'{name}/cbow_final_{accuracy:.2f}.pth'
+    torch.save(model.state_dict(), final_model_path)
+    print(f"model saved to {final_model_path}")
+    print(f"***  test accuracy: {accuracy:.2f}")
