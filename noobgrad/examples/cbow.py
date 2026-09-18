@@ -1,5 +1,4 @@
 import torch.nn as nn
-import tiktoken
 import re
 import csv
 from datasets import load_dataset
@@ -42,19 +41,24 @@ def create_cbow_pairs(sentence, voc, window_size):
     pairs.append((context, target))
   return pairs
 
-if __name__ == "__main__":
-  ds = load_dataset("/Users/timcr/.cache/huggingface/hub/datasets--Salesforce--wikitext")
+def main(dset_path: str, output_file: str, window_size: int):
+  """
+  Load basic dataset, than based on that building vocabulary and cbow pairs
+  """
+  ds = load_dataset(dset_path)
   train = ds["train"]
-  texts = train["text"][15:17]
+  texts = train["text"]
   voc = build_vocabulary(texts)
 
-  with open('output.csv', 'w', newline='', encoding='utf-8') as file:
+  with open(output_file, 'w', newline='', encoding='utf-8') as file:
     writer = csv.writer(file, delimiter=',')
     writer.writerow(['context', 'target'])
     for text in texts:
-      pairs = create_cbow_pairs(text, voc, 3)
+      pairs = create_cbow_pairs(text, voc, window_size)
       for context, target in pairs:
         writer.writerow([" ".join(map(str, context)), target])
-  # print(text + "\n")
-  # enc = tiktoken.get_encoding("gpt2")
-  # print(enc.encode(text))
+
+if __name__ == "__main__":
+  dset_path = "/Users/timcr/.cache/huggingface/hub/datasets--Salesforce--wikitext"
+  output_file = "output.csv"
+  main(dset_path, output_file, window_size=3)
