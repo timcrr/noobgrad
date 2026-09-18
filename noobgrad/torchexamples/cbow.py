@@ -9,6 +9,8 @@ from datasets import load_dataset
 
 def trange(n): return tqdm(n, total=len(n))
 
+def envbool(name, default=False): return os.getenv(name, str(int(default)) == "1")
+
 class CBOW(nn.Module):
   def __init__(self, voc_size, embed_dim):
     super().__init__()
@@ -22,10 +24,10 @@ class CBOW(nn.Module):
     return x
 
 def build_vocabulary(texts):
-  voc = {}
-  k = 0
+  voc = {"<unk>": 0}
+  k = 1
   for sentence in texts:
-    sentence = re.sub(r'[^a-zA-Z\s]', '', sentence)
+    sentence = re.sub(r'[^a-zA-Z0-9\s]', '', sentence)
     sentence = sentence.lower()
     sentence = sentence.split()
     for word in sentence:
@@ -36,10 +38,10 @@ def build_vocabulary(texts):
 
 def create_cbow_pairs(sentence, voc, window_size):
   pairs = []
-  sentence = re.sub(r'[^a-zA-Z\s]', '', sentence)
+  sentence = re.sub(r'[^a-zA-Z0-9\s]', '', sentence)
   sentence = sentence.lower()
   sentence = sentence.split()
-  ids = [voc[word] for word in sentence if word in voc]
+  ids = [voc.get(word, voc["<unk>"]) for word in sentence]
   for i in range(window_size, len(ids) - window_size):
     context = ids[i - window_size:i] + ids[i + 1: i + window_size + 1]
     target = ids[i]
@@ -65,7 +67,7 @@ def main(dset_path: str, dset_split: str, output_file: str, window_size: int, de
         writer.writerow([" ".join(map(str, context)), target])
   return len(voc)
 
-def get_tensorset(csv_file: str, batch_size: int, limit: int = -1, delimiter: str=',') -> DataLoader:
+def get_tensorset(csv_file: str, batch_size: int, limit: int = -1, delimiter: str=',', shuffle=False) -> DataLoader:
   contexts = []
   targets = []
   with open(csv_file, 'r', encoding='utf-8') as file:
@@ -82,18 +84,24 @@ def get_tensorset(csv_file: str, batch_size: int, limit: int = -1, delimiter: st
   dataset = TensorDataset(contexts, targets)
   if limit != -1:
     dataset = torch.utils.data.Subset(dataset, range(limit))
-  dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+  dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
   return dataloader
 
+@torch.no_grad()
 def validate(model, criterion, loader, device):
   model.eval()
+  total_loss = 0.0
+  total_n = 0
   for X, y in (t:=trange(loader)):
     X, y = X.to(device), y.to(device)
     logits = model(X)
     loss = criterion(logits, y)
+    total_loss += loss.item() * y.size(0)
+    total_n += y.size(0)
     t.set_description(f"***  validation loss: {loss.item():.4f}")
-  return loss
+  return total_loss / total_n
 
+@torch.no_grad()
 def test(model, loader, device):
   model.eval()
   total_params = sum(p.numel() for p in model.parameters())
@@ -114,8 +122,8 @@ if __name__ == "__main__":
   dset_path = '/Users/timcr/.cache/huggingface/hub/datasets--Salesforce--wikitext'
   output_file = 'data/wiki_cbow/test.csv'
   dset_split = 'test'
-  voc_size = main(dset_path, dset_split, output_file, window_size=3)
-  print(voc_size) # 62300
+  voc_size = main(dset_path, dset_split, output_file, window_size=5)
+  print(voc_size) # 65332
   '''
   import os
   from datetime import datetime
@@ -124,16 +132,16 @@ if __name__ == "__main__":
   device = torch.accelerator.current_accelerator().type
   batch_size = int(os.getenv("BS", "64"))
   epochs = int(os.getenv("EP", "5"))
-  use_val = bool(os.getenv("VAL", "1"))
-  test_model = bool(os.getenv("TEST", "0"))
+  use_val = envbool("VAL", True)
+  test_model = envbool("TEST", False)
   test_pth = os.getenv("TEST_PATH", "")
 
-  trainloader = get_tensorset(csv_file='data/wiki_cbow/train.csv', batch_size=batch_size)
+  trainloader = get_tensorset(csv_file='data/wiki_cbow/train.csv', batch_size=batch_size, shuffle=True)
   valloader = get_tensorset(csv_file='data/wiki_cbow/validation.csv', batch_size=batch_size)
   testloader = get_tensorset(csv_file='data/wiki_cbow/test.csv', batch_size=batch_size)
-  model = CBOW(62300, 300).to(device)
+  model = CBOW(62300, 512).to(device)
   criterion = nn.CrossEntropyLoss()
-  optimizer = optim.Adam(model.parameters(), lr=5e-3)
+  optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
   if test_model:
     state_dict = torch.load(test_pth, weights_only=True)
