@@ -92,11 +92,12 @@ def validate(model, criterion, loader, device):
     logits = model(X)
     loss = criterion(logits, y)
     t.set_description(f"***  validation loss: {loss.item():.4f}")
+  return loss
 
 def test(model, loader, device):
   model.eval()
   total_params = sum(p.numel() for p in model.parameters())
-  print(total_params)
+  print('total params: ', total_params)
   total_correct = 0
   total_n = 0
   for X, y in tqdm(loader):
@@ -116,6 +117,11 @@ if __name__ == "__main__":
   voc_size = main(dset_path, dset_split, output_file, window_size=3)
   print(voc_size) # 62300
   '''
+  from datetime import datetime
+  from pathlib import Path
+  name = f"noobgrad/models/cbow_{datetime.now().strftime('%d_%m_%H%M')}"
+  Path(name).mkdir(exist_ok=True)
+
   device = torch.accelerator.current_accelerator().type
   trainloader = get_tensorset(csv_file='data/wiki_cbow/train.csv')
   valloader = get_tensorset(csv_file='data/wiki_cbow/validation.csv')
@@ -125,6 +131,7 @@ if __name__ == "__main__":
   optimizer = optim.Adam(model.parameters(), lr=1e-3)
   epochs = 5
   print(f"***  using device:  {device}")
+  best_val_loss = float('inf')
   for epoch in range(epochs):
     for X, y in (t:=trange(trainloader)):
       X, y = X.to(device), y.to(device)
@@ -134,6 +141,11 @@ if __name__ == "__main__":
       loss.backward()
       optimizer.step()
       t.set_description(f"***  [{epoch+1}/{epochs}]   loss: {loss.item():.4f}")
-    validate(model, criterion, valloader, device)
+    val_loss = validate(model, criterion, valloader, device)
+    if val_loss < best_val_loss:
+      best_val_loss = val_loss
+      model_path = f'{name}/cbow_{epoch}_{val_loss:.2f}.pth'
+      torch.save(model.state_dict(), model_path)
+      print(f"***  saved best model: ", model_path)
   accuracy = test(model, testloader, device)
   print(f"***  test accuracy: {accuracy:.4f}")
