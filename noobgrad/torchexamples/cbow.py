@@ -4,6 +4,7 @@ import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
 import re
 import csv
+import json
 from tqdm.auto import tqdm
 from datasets import load_dataset
 
@@ -36,6 +37,14 @@ def build_vocabulary(texts):
         k += 1
   return voc
 
+def save_vocabulary(voc, path):
+  with open(path, 'w', encoding='utf-8') as file:
+    json.dump(voc, file, ensure_ascii=False, indent=2)
+
+def load_vocabulary(path):
+  with open(path, 'r', encoding='utf-8') as file:
+    return json.load(file)
+
 def create_cbow_pairs(sentence, voc, window_size):
   pairs = []
   sentence = re.sub(r'[^a-zA-Z0-9\s]', '', sentence)
@@ -57,6 +66,7 @@ def main(dset_path: str, dset_split: str, output_file: str, window_size: int, de
   diff_split = ds[dset_split]
   texts = diff_split["text"]
   voc = build_vocabulary(train_split["text"]) # voc from train split
+  save_vocabulary(voc, './data/wiki_cbow/tokenizer.json')
 
   with open(output_file, 'w', newline='', encoding='utf-8') as file:
     writer = csv.writer(file, delimiter=delimiter)
@@ -120,8 +130,8 @@ def test(model, loader, device):
 if __name__ == "__main__":
   '''
   dset_path = '/Users/timcr/.cache/huggingface/hub/datasets--Salesforce--wikitext'
-  output_file = 'data/wiki_cbow/test.csv'
-  dset_split = 'test'
+  output_file = 'data/wiki_cbow/train.csv'
+  dset_split = 'train'
   voc_size = main(dset_path, dset_split, output_file, window_size=5)
   print(voc_size) # 65332
   '''
