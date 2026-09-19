@@ -133,7 +133,7 @@ if __name__ == "__main__":
   output_file = 'data/wiki_cbow/train.csv'
   dset_split = 'train'
   voc_size = main(dset_path, dset_split, output_file, window_size=5)
-  print(voc_size) # 65332
+  print(voc_size) # 65333
   '''
   import os
   from datetime import datetime
@@ -149,7 +149,7 @@ if __name__ == "__main__":
   trainloader = get_tensorset(csv_file='data/wiki_cbow/train.csv', batch_size=batch_size, shuffle=True)
   valloader = get_tensorset(csv_file='data/wiki_cbow/validation.csv', batch_size=batch_size)
   testloader = get_tensorset(csv_file='data/wiki_cbow/test.csv', batch_size=batch_size)
-  model = CBOW(62300, 512).to(device)
+  model = CBOW(62333, 512).to(device)
   criterion = nn.CrossEntropyLoss()
   optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
