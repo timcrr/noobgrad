@@ -57,8 +57,32 @@ class MultiHeadAttention(nn.Module):
     attn_out = torch.matmul(attn_weights,v) # (B,H,T,D)
     return self.out_proj(self._merge_heads(attn_out,bs,seq_len))
 
+class TransformerBlock(nn.Module):
+  def __init__(self, embed_dim, attn_heads, dropout:float=0.0, causal:bool=False):
+    super().__init__()
+    self.attn = MultiHeadAttention(embed_dim, attn_heads, causal=causal)
+    self.ffn = nn.Sequential(
+      nn.Linear(embed_dim,embed_dim*4),
+      nn.GELU(),
+      nn.Linear(embed_dim*4,embed_dim),
+    )
+    self.ln = nn.LayerNorm(embed_dim)
+    self.dropout = nn.Dropout(dropout)
+  def forward(self,x):
+    x = x + self.dropout(self.attn(self.ln(x)))
+    return x + self.dropout(self.ffn(self.ln(x)))
+
+class Transformer(nn.Module):
+  def __init__(self, num_blocks, embed_dim, attn_heads, dropout:float=0.0):
+    super().__init__()
+    enc_blocks = [TransformerBlock(embed_dim, attn_heads, dropout) for _ in range(num_blocks)]
+    self.encoder = nn.Sequential(*enc_blocks)
+  def forward(self,x):
+    return self.encoder(x)
+
 if __name__ == "__main__":
   print(f"***  using {device}")
-  attn = MultiHeadAttention(256, 4, causal=True).to(device)
-  X = torch.rand(size=(2, 10, 256)).to(device)
-  attn.forward(X)
+  model = Transformer(6, 256, 4).to(device)
+  X = torch.rand(size=(2,10,256)).to(device)
+  res = model.forward(X)
+  print(sum(p.numel() for p in model.parameters()))
