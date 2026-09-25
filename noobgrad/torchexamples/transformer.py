@@ -79,8 +79,8 @@ class EncoderLayer(nn.Module):
 class DecoderLayer(nn.Module):
   def __init__(self, embed_dim, attn_heads, dropout:float=0.0):
     super().__init__()
-    self.self_attn = MultiHeadAttention(embed_dim, attn_heads, dropout=dropout, causal=False)
-    self.cross_attn = MultiHeadAttention(embed_dim, attn_heads, dropout=dropout,causal=True)
+    self.self_attn = MultiHeadAttention(embed_dim, attn_heads, dropout=dropout, causal=True)
+    self.cross_attn = MultiHeadAttention(embed_dim, attn_heads, dropout=dropout, causal=False)
     self.ffn = nn.Sequential(
       nn.Linear(embed_dim,embed_dim*4),
       nn.GELU(),
