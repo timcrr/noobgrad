@@ -21,16 +21,31 @@ class MultiHeadAttention(nn.Module):
     return: (B,H,T,D)
     """
     return x.view(bs,seq_len,self.num_heads,self.head_dim).transpose(1,2)
+  def _merge_heads(self,x,bs,seq_len):
+    """
+    x: (B,H,T,D)
+    return: (B,T,E)
+    """
+    return x.transpose(1,2).reshape(bs,seq_len,self.embed_dim)
   def forward(self,x):
     print(x.shape)
     bs, seq_len, emb = x.shape
-    x = self._split_heads(x,bs,seq_len)
-    print(x.shape)
+
+    # (B,H,T,D)
+    q = self._split_heads(self.q_proj(x),bs,seq_len)
+    k = self._split_heads(self.k_proj(x),bs,seq_len)
+    v = self._split_heads(self.v_proj(x),bs,seq_len)
+
+    scale = self.head_dim ** 0.5
+    attn_scores = torch.matmul(q,k.transpose(-1,-2)) * scale # (B,H,T,T)
+
+    attn_weights = F.softmax(attn_scores,dim=-1)
+    attn_out = torch.matmul(attn_weights,v) # (B,H,T,D)
+    return self.out_proj(self._merge_heads(attn_out,bs,seq_len))
 
 if __name__ == "__main__":
   device = torch.accelerator.current_accelerator().type
   print(f"***  using {device}")
-  attn = MultiHeadAttention(512, 8)
-  X = torch.randint(low=0, high=100, size=(2, 10, 512))
+  attn = MultiHeadAttention(512, 8).to(device)
+  X = torch.rand(size=(2, 10, 512)).to(device)
   attn.forward(X)
-
