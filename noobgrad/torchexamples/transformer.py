@@ -3,11 +3,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-device = torch.accelerator.current_accelerator().type
-
 class MultiHeadAttention(nn.Module):
-  def __init__(self, embed_dim, num_heads, dropout:float=0.0, causal:bool=False):
+  def __init__(self, embed_dim, num_heads, dropout:float=0.0, causal:bool=False, device:str=torch.accelerator.current_accelerator().type):
     super().__init__()
+    self.device = device
     if embed_dim % num_heads != 0: raise ValueError("embed dim should be divisible by num heads")
     self.embed_dim = embed_dim
     self.num_heads = num_heads
@@ -36,7 +35,7 @@ class MultiHeadAttention(nn.Module):
     """
     return: (Tq,Tk)
     """
-    mask = torch.ones((Tq,Tk),dtype=torch.bool,device=device)
+    mask = torch.ones((Tq,Tk),dtype=torch.bool,device=self.device)
     return torch.tril(mask)
   def forward(self, query, key=None, value=None):
     if key is None: key = query
@@ -62,9 +61,9 @@ class MultiHeadAttention(nn.Module):
     return self.out_proj(self._merge_heads(attn_out,bs,Tq))
 
 class EncoderLayer(nn.Module):
-  def __init__(self, embed_dim, attn_heads, dropout:float=0.0):
+  def __init__(self, embed_dim, attn_heads, dropout:float=0.0, device:str=torch.accelerator.current_accelerator().type):
     super().__init__()
-    self.self_attn = MultiHeadAttention(embed_dim, attn_heads, dropout=dropout, causal=False)
+    self.self_attn = MultiHeadAttention(embed_dim, attn_heads, dropout=dropout, causal=False, device=device)
     self.ffn = nn.Sequential(
       nn.Linear(embed_dim,embed_dim*4),
       nn.GELU(),
@@ -77,10 +76,10 @@ class EncoderLayer(nn.Module):
     return x + self.dropout(self.ffn(self.ln(x)))
 
 class DecoderLayer(nn.Module):
-  def __init__(self, embed_dim, attn_heads, dropout:float=0.0):
+  def __init__(self, embed_dim, attn_heads, dropout:float=0.0, device:str=torch.accelerator.current_accelerator().type):
     super().__init__()
-    self.self_attn = MultiHeadAttention(embed_dim, attn_heads, dropout=dropout, causal=True)
-    self.cross_attn = MultiHeadAttention(embed_dim, attn_heads, dropout=dropout, causal=False)
+    self.self_attn = MultiHeadAttention(embed_dim, attn_heads, dropout=dropout, causal=True, device=device)
+    self.cross_attn = MultiHeadAttention(embed_dim, attn_heads, dropout=dropout, causal=False, device=device)
     self.ffn = nn.Sequential(
       nn.Linear(embed_dim,embed_dim*4),
       nn.GELU(),
@@ -94,13 +93,13 @@ class DecoderLayer(nn.Module):
     return x + self.dropout(self.ffn(self.ln(x)))
 
 class Transformer(nn.Module):
-  def __init__(self, num_layers, embed_dim, attn_heads, dropout:float=0.0):
+  def __init__(self, num_layers, embed_dim, attn_heads, dropout:float=0.0, device:str=torch.accelerator.current_accelerator().type):
     super().__init__()
     self.enc_layers = nn.ModuleList([
-      EncoderLayer(embed_dim,attn_heads,dropout) for _ in range(num_layers)
+      EncoderLayer(embed_dim,attn_heads,dropout,device=device) for _ in range(num_layers)
     ])
     self.dec_layers = nn.ModuleList([
-      DecoderLayer(embed_dim,attn_heads,dropout) for _ in range(num_layers)
+      DecoderLayer(embed_dim,attn_heads,dropout,device=device) for _ in range(num_layers)
     ])
     self.ln = nn.LayerNorm(embed_dim)
   def forward(self,src,tgt):
@@ -110,12 +109,3 @@ class Transformer(nn.Module):
     for layer in self.dec_layers:
       tgt = layer(tgt,enc_out)
     return self.ln(tgt)
-
-if __name__ == "__main__":
-  print(f"***  using {device}")
-  model = Transformer(num_layers=6, embed_dim=256, attn_heads=4, dropout=0.1).to(device)
-  X = torch.randn(2, 10, 256).to(device)
-  y = torch.randn(2, 10, 256).to(device)
-  out = model(X,y)
-  print("output shape ", out.shape)
-  print(sum(p.numel() for p in model.parameters()))
