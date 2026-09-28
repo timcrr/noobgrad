@@ -47,7 +47,7 @@ class MultiHeadAttention(nn.Module):
     k = self._split_heads(self.k_proj(key),bs,Tk) # (B,H,Tk,D)
     v = self._split_heads(self.v_proj(value),bs,Tk) # (B,H,Tk,D)
 
-    scale = self.head_dim ** 0.5
+    scale = self.head_dim ** -0.5
     attn_scores = torch.matmul(q,k.transpose(-1,-2)) * scale # (B,H,Tq,Tk)
 
     if self.causal:
@@ -60,15 +60,21 @@ class MultiHeadAttention(nn.Module):
     attn_out = torch.matmul(attn_weights,v) # (B,H,Tq,D)
     return self.out_proj(self._merge_heads(attn_out,bs,Tq))
 
+class SwiGLU(nn.Module):
+  def __init__(self, embed_dim):
+    super().__init__()
+    self.gate_proj = nn.Linear(embed_dim,embed_dim*4,bias=False)
+    self.up_proj = nn.Linear(embed_dim,embed_dim*4,bias=False)
+    self.down_proj = nn.Linear(embed_dim*4,embed_dim,bias=False)
+  def swish(self,x): return x * F.sigmoid(x)
+  def forward(self,x):
+    return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
+
 class EncoderLayer(nn.Module):
   def __init__(self, embed_dim, attn_heads, dropout:float=0.0, device:str=torch.accelerator.current_accelerator().type):
     super().__init__()
     self.self_attn = MultiHeadAttention(embed_dim, attn_heads, dropout=dropout, causal=False, device=device)
-    self.ffn = nn.Sequential(
-      nn.Linear(embed_dim,embed_dim*4),
-      nn.GELU(),
-      nn.Linear(embed_dim*4,embed_dim),
-    )
+    self.ffn = SwiGLU(embed_dim)
     self.ln = nn.LayerNorm(embed_dim)
     self.dropout = nn.Dropout(dropout)
   def forward(self,x):
@@ -80,11 +86,7 @@ class DecoderLayer(nn.Module):
     super().__init__()
     self.self_attn = MultiHeadAttention(embed_dim, attn_heads, dropout=dropout, causal=True, device=device)
     self.cross_attn = MultiHeadAttention(embed_dim, attn_heads, dropout=dropout, causal=False, device=device)
-    self.ffn = nn.Sequential(
-      nn.Linear(embed_dim,embed_dim*4),
-      nn.GELU(),
-      nn.Linear(embed_dim*4,embed_dim),
-    )
+    self.ffn = SwiGLU(embed_dim)
     self.ln = nn.LayerNorm(embed_dim)
     self.dropout = nn.Dropout(dropout)
   def forward(self,x,enc_out):
