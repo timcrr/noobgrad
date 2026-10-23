@@ -40,12 +40,13 @@ class Veu(nn.Module):
     ])
     self.lm_head = nn.Linear(config.embed_dim,config.vocab_size)
     self.norm = nn.RMSNorm(config.embed_dim)
-  def forward(self,x,masked_pos=None):
+  def forward(self,x,masked_pos=None,attention_mask=None):
     bs,seq_len = x.shape
     positions = torch.arange(seq_len,device=x.device).unsqueeze(0)
     x = self.emb(x) + self.pos_emb(positions)
+    mask = attention_mask[:,None,None,:] if attention_mask is not None else None
     for layer in self.layers:
-      x = layer(x)
+      x = layer(x,mask)
     x = self.norm(x)
     if masked_pos is not None:
       x = x.gather(1,masked_pos.clamp(min=0).unsqueeze(-1).expand(-1,-1,x.size(-1)))
@@ -123,11 +124,13 @@ def collate_fn(batch):
   input_ids = [torch.tensor(x['input_ids'],dtype=torch.long) for x in batch]
   masked_pos = [torch.tensor(x['masked_pos'],dtype=torch.long) for x in batch]
   labels = [torch.tensor(x['labels'],dtype=torch.long) for x in batch]
-  return {
+  out = {
     'input_ids': nn.utils.rnn.pad_sequence(input_ids,batch_first=True,padding_value=PAD_TOKEN_ID),
     'masked_pos': nn.utils.rnn.pad_sequence(masked_pos,batch_first=True,padding_value=-1),
     'labels': nn.utils.rnn.pad_sequence(labels,batch_first=True,padding_value=-100),
   }
+  out['attention_mask'] = out['input_ids'] != PAD_TOKEN_ID
+  return out
 
 def get_tensorset(dset_path:str,batch_size:int):
   ds = load_dataset('parquet',data_dir=dset_path)

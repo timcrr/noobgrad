@@ -30,7 +30,7 @@ class MultiHeadAttention(nn.Module):
   def _causal_mask(self,Tq,Tk):
     mask = torch.ones((Tq,Tk),dtype=torch.bool,device=self.device)
     return torch.tril(mask)
-  def forward(self, query, key=None, value=None):
+  def forward(self, query, key=None, value=None, mask=None):
     if key is None: key = query
     if value is None: value = query
     bs, Tq, _ = query.shape
@@ -41,11 +41,12 @@ class MultiHeadAttention(nn.Module):
     v = self._split_heads(self.v_proj(value),bs,Tk,self.kv_heads) # (B,Hk,Tk,D)
 
     if self.flash:
-      attn_out = F.scaled_dot_product_attention(q,k,v,attn_mask=None,dropout_p=self.dropout_p,is_causal=self.causal,enable_gqa=True)
+      attn_out = F.scaled_dot_product_attention(q,k,v,attn_mask=mask,dropout_p=self.dropout_p,is_causal=self.causal,enable_gqa=True)
     else:
       scale = self.head_dim ** -0.5
       attn_scores = torch.matmul(q,k.transpose(-1,-2)) * scale # (B,H,Tq,Tk)
-
+      if mask is not None:
+        attn_scores = attn_scores.masked_fill(~mask,float('-inf'))
       if self.causal:
         causal_mask = self._causal_mask(Tq,Tk) # (Tq,Tk)
         causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)
@@ -99,8 +100,8 @@ class TransformerBlock(nn.Module):
     self.attn_norm = nn.RMSNorm(embed_dim)
     self.ffn_norm = nn.RMSNorm(embed_dim)
     self.dropout = nn.Dropout(dropout)
-  def forward(self,x):
-    x = x + self.dropout(self.self_attn(self.attn_norm(x)))
+  def forward(self,x,mask=None):
+    x = x + self.dropout(self.self_attn(self.attn_norm(x),mask=mask))
     return x + self.dropout(self.ffn(self.ffn_norm(x)))
 
 class Transformer(nn.Module):
