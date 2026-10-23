@@ -67,42 +67,45 @@ def rand_tokens(seq:list[int],rng,mlm_prob:float=0.15):
   seq.append(SEP_TOKEN_ID)
   return seq,masked_tokens,rand_indices
 
-def split_dset():
-  ds = load_dataset('rojagtap/bookcorpus')['train']
-  train_validtest = ds.train_test_split(test_size=0.2,seed=1234)
+def split_dset(ds:DatasetDict,only_val:bool=False):
+  train_validtest = ds['train'].train_test_split(test_size=0.2,seed=1234)
   valid_test = train_validtest['test'].train_test_split(test_size=0.1,seed=1234)
   ds_splits = DatasetDict({
     'train': train_validtest['train'],
-    'validation': valid_test['train'],
-    'test': valid_test['test'],
+    'validation': valid_test['train'] if not only_val else train_validtest['test'],
+    'test': valid_test['test'] if not only_val else ds['test'], # TODO: i guess there was dsets with train and val splits make sure
   })
   return ds_splits
 
-def get_parquet(dset_path:str,output_dir_path:str,file_idx:int,enc:tiktoken.Encoding,rng):
+def get_parquet(dset_paths:list[str],output_dir_path:str,enc:tiktoken.Encoding,rng,file_idx:int=-1):
   os.makedirs(output_dir_path,exist_ok=True)
+  for dset in dset_paths:
+    ds = load_dataset(dset)
+    if len(ds) == 1: ds = split_dset(ds)
+    if len(ds) == 2 and ds.get('test',0) != 0: ds = split_dset(ds,only_val=True)
+    if file_idx == -1: file_idx = dset_paths.index(dset)+1
   # ds = load_dataset('parquet',data_dir=dset_path)
-  ds = split_dset()
-  for split in ['train','validation','test']:
-    texts = ds[split]['text']
-    input_ids, masked_pos, original_tokens = [], [], []
-    for text in (t:=trange(texts)):
-      t.set_description(f'***  {split}')
-      if len(text) < 20: continue
-      seq = enc.encode(text)
-      if len(seq) < 20: continue
-      masked_seq,masked_tokens,rand_indices = rand_tokens(seq,rng,mlm_prob=0.15)
-      input_ids.append(masked_seq)
-      masked_pos.append(rand_indices)
-      original_tokens.append(masked_tokens)
-    table = pa.table({
-      "input_ids": pa.array(input_ids,type=pa.list_(pa.int32())),
-      "masked_pos": pa.array(masked_pos,type=pa.list_(pa.int32())),
-      "labels": pa.array(original_tokens,type=pa.list_(pa.int32())),
-    })
-    output_name = f'{split}-{file_idx:05d}'
-    out_file = f"{output_dir_path}{output_name}.parquet"
-    pq.write_table(table,out_file,compression='zstd')
-    print(f'wrote {out_file} ({len(input_ids)} examoples)')
+    for split in ['train','validation','test']:
+      texts = ds[split]['text']
+      input_ids, masked_pos, original_tokens = [], [], []
+      for text in (t:=trange(texts)):
+        t.set_description(f'***  {split}')
+        if len(text) < 20: continue
+        seq = enc.encode(text)
+        if len(seq) < 20: continue
+        masked_seq,masked_tokens,rand_indices = rand_tokens(seq,rng,mlm_prob=0.15)
+        input_ids.append(masked_seq)
+        masked_pos.append(rand_indices)
+        original_tokens.append(masked_tokens)
+      table = pa.table({
+        "input_ids": pa.array(input_ids,type=pa.list_(pa.int32())),
+        "masked_pos": pa.array(masked_pos,type=pa.list_(pa.int32())),
+        "labels": pa.array(original_tokens,type=pa.list_(pa.int32())),
+      })
+      output_name = f'{split}-{file_idx:05d}'
+      out_file = f"{output_dir_path}{output_name}.parquet"
+      pq.write_table(table,out_file,compression='zstd')
+      print(f'wrote {out_file} ({len(input_ids)} examoples)')
 
 def get_tensorset(csv_file:str,batch_size:int,limit:int=-1,delimiter:str=',',shuffle=False) -> DataLoader:
   import csv
@@ -123,7 +126,7 @@ def get_tensorset(csv_file:str,batch_size:int,limit:int=-1,delimiter:str=',',shu
   return dataloader
 
 if __name__ == "__main__":
-  dset_path = "./data/wikitext/"
+  dset_paths = ["./data/wikitext/"]
   output_dir_path = "./data/mlmtext/"
   rng = np.random.default_rng(seed=1234)
   config = Config(t_blocks=12,embed_dim=768,attn_heads=12,kv_heads=4,max_seq_len=256)
@@ -139,4 +142,4 @@ if __name__ == "__main__":
       "<|sep|>": 200021,
     },
   )
-  get_parquet(dset_path,output_dir_path,2,enc,rng)
+  get_parquet(dset_paths,output_dir_path,enc,rng,file_idx=2)
