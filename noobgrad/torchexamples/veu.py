@@ -1,5 +1,6 @@
 import os
 import hashlib
+from datetime import datetime
 from dataclasses import dataclass
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -134,27 +135,59 @@ def collate_fn(batch):
 
 def get_tensorset(dset_path:str,batch_size:int):
   ds = load_dataset('parquet',data_dir=dset_path)
-  train_loader = DataLoader(ds['train'].with_format(None),batch_size=batch_size,shuffle=True,pin_memory=True,collate_fn=collate_fn)
-  val_loader = DataLoader(ds['validation'].with_format(None),batch_size=batch_size,shuffle=True,pin_memory=True,collate_fn=collate_fn)
-  test_loader = DataLoader(ds['test'].with_format(None),batch_size=batch_size,shuffle=True,pin_memory=True,collate_fn=collate_fn)
+  train_loader = DataLoader(ds['train'].with_format(None),batch_size=batch_size,shuffle=True,collate_fn=collate_fn)
+  val_loader = DataLoader(ds['validation'].with_format(None),batch_size=batch_size,shuffle=True,collate_fn=collate_fn)
+  test_loader = DataLoader(ds['test'].with_format(None),batch_size=batch_size,shuffle=True,collate_fn=collate_fn)
   return train_loader,val_loader,test_loader
 
+def forward_batch(model,batch,device):
+  X = batch['input_ids'].to(device)
+  masked_pos = batch['masked_pos'].to(device)
+  y = batch['labels'].to(device)
+  mask = batch['attention_mask'].to(device)
+  with torch.autocast(device_type=device,dtype=torch.bfloat16):
+    logits = model(X,masked_pos=masked_pos,attention_mask=mask)
+  return logits.float().reshape(-1,logits.size(-1)),y.reshape(-1)
+
+@torch.no_grad()
+def validate(model,criterion,loader,device):
+  model.eval()
+  total_loss = 0.0
+  total_n = 0
+  for batch in (t:=trange(loader)):
+    logits,y = forward_batch(model,batch,device)
+    loss = criterion(logits,y)
+    n = (y != -100).sum().item()
+    total_loss += loss.item() * n
+    total_n += n
+    t.set_description(f"***  validation loss: {loss.item():.4f}")
+  return total_loss / total_n
+
 def train(config:Config,dset_path:str):
-  model = Veu(config=config).to('mps')
+  device = 'mps'
+  model = Veu(config=config).to(device)
   optim = torch.optim.Adam(model.parameters(),lr=7e-4)
   criterion = nn.CrossEntropyLoss(ignore_index=-100)
   trainloader,valloader,testloader = get_tensorset(dset_path,batch_size=32)
   epochs = 10
+  now = datetime.now().strftime("%dday%H_%M_%S")
+  os.makedirs(f'noobgrad/models/veu_{now}',exist_ok=True)
+  best_val_loss = float('inf')
   for epoch in range(epochs):
-    for batch in trainloader:
-      X = batch['input_ids'].to('mps')
-      idx = batch['masked_pos'].to('mps')
-      y = batch['labels'].to('mps')
-      print(X.shape)
-      print(idx.shape)
-      print(y.shape)
-      
-
+    model.train()
+    for batch in (t:=trange(trainloader)):
+      logits,y = forward_batch(model,batch,device)
+      loss = criterion(logits,y)
+      optim.zero_grad()
+      loss.backward()
+      optim.step()
+      t.set_description(f"***  [{epoch+1}/{epochs}]   loss: {loss.item():.4f}")
+    val_loss = validate(model,criterion,valloader,device)
+    if val_loss < best_val_loss:
+      best_val_loss = val_loss
+      model_path = f'noobgrad/models/veu_{epoch}_{val_loss:.4f}.pth'
+      torch.save(model.state_dict(),model_path)
+      print(f"***  saved best model: ",model_path)
 
 if __name__ == "__main__":
   dset_paths = ['rojagtap/bookcorpus']
@@ -174,5 +207,5 @@ if __name__ == "__main__":
     },
   )
   config = Config(t_blocks=12,embed_dim=768,attn_heads=12,kv_heads=4,max_seq_len=256,vocab_size=enc.n_vocab)
-  # get_parquet(config,dset_paths,output_dir_path,enc,rng,file_idx=2)
+  # get_parquet(config,dset_paths,output_dir_path,enc,rng,file_idx=1)
   train(config=config,dset_path='./data/mlmtext')
