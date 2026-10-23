@@ -1,15 +1,18 @@
-import csv
+import os
 import hashlib
 from dataclasses import dataclass
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
 import tiktoken
 import numpy as np
-from datasets import load_dataset
+from datasets import load_dataset, DatasetDict
 
 from noobgrad.torchexamples.transformer import TransformerBlock
+from noobgrad.extra.utils import trange
 
 FIRST_SPECIAL_TOKEN_ID=199999
 MASK_TOKEN_ID=200019
@@ -59,35 +62,57 @@ def rand_tokens(seq:list[int],rng,mlm_prob:float=0.15):
       seq[idx] = MASK_TOKEN_ID
     elif idx_bucket > 8000 and idx_bucket < 9000:
       seq[idx] = rng.choice(FIRST_SPECIAL_TOKEN_ID-1,replace=False)
+  masked_tokens = [seq[i] for i in rand_indices]
   seq.insert(0,CLS_TOKEN_ID)
   seq.append(SEP_TOKEN_ID)
-  return seq,rand_indices
+  return seq,masked_tokens,rand_indices
 
-def get_csv(dset_path:str,output_dir_path:str,enc:tiktoken.Encoding,rng):
-  ds = load_dataset("parquet",data_dir=dset_path)
-  splits = ['train','validation','test']
-  for split in splits:
-    output_name = output_dir_path + split + '.csv'
-    split = ds[split]
-    texts = split['text']
-    with open(output_name,'w',newline='',encoding='utf-8') as file:
-      writer = csv.writer(file,delimiter=',')
-      writer.writerow(['sequence','target'])
-      for text in texts:
-        seq = enc.encode(text)
-        if len(seq) == 0 or len(seq) < 20: continue
-        seq,rand_indices = rand_tokens(seq,rng,mlm_prob=0.15)
-        writer.writerow([" ".join(map(str,seq)), " ".join(map(str,rand_indices))])
-  print("all csvs are done")
+def split_dset():
+  ds = load_dataset('rojagtap/bookcorpus')['train']
+  train_validtest = ds.train_test_split(test_size=0.2,seed=1234)
+  valid_test = train_validtest['test'].train_test_split(test_size=0.1,seed=1234)
+  ds_splits = DatasetDict({
+    'train': train_validtest['train'],
+    'validation': valid_test['train'],
+    'test': valid_test['test'],
+  })
+  return ds_splits
+
+def get_parquet(dset_path:str,output_dir_path:str,file_idx:int,enc:tiktoken.Encoding,rng):
+  os.makedirs(output_dir_path,exist_ok=True)
+  # ds = load_dataset('parquet',data_dir=dset_path)
+  ds = split_dset()
+  for split in ['train','validation','test']:
+    texts = ds[split]['text']
+    input_ids, masked_pos, original_tokens = [], [], []
+    for text in (t:=trange(texts)):
+      t.set_description(f'***  {split}')
+      if len(text) < 20: continue
+      seq = enc.encode(text)
+      if len(seq) < 20: continue
+      masked_seq,masked_tokens,rand_indices = rand_tokens(seq,rng,mlm_prob=0.15)
+      input_ids.append(masked_seq)
+      masked_pos.append(rand_indices)
+      original_tokens.append(masked_tokens)
+    table = pa.table({
+      "input_ids": pa.array(input_ids,type=pa.list_(pa.int32())),
+      "masked_pos": pa.array(masked_pos,type=pa.list_(pa.int32())),
+      "labels": pa.array(original_tokens,type=pa.list_(pa.int32())),
+    })
+    output_name = f'{split}-{file_idx:05d}'
+    out_file = f"{output_dir_path}{output_name}.parquet"
+    pq.write_table(table,out_file,compression='zstd')
+    print(f'wrote {out_file} ({len(input_ids)} examoples)')
 
 def get_tensorset(csv_file:str,batch_size:int,limit:int=-1,delimiter:str=',',shuffle=False) -> DataLoader:
+  import csv
   seqs = []
   targets = []
   with open(csv_file,'r',encoding='utf-8') as file:
     reader = csv.DictReader(file,delimiter=delimiter)
     for row in reader:
-      seqs = list(map(int,row['sequence'].split()))
-      target = list(map(int,row['target'].split()))
+      seqs = list(map(int,row['input_ids'].split()))
+      target = list(map(int,row['masked_pos'].split()))
       seqs.append(seqs)
       targets.append(target)
   seqs = torch.tensor(seqs,dtype=torch.long)
@@ -99,6 +124,7 @@ def get_tensorset(csv_file:str,batch_size:int,limit:int=-1,delimiter:str=',',shu
 
 if __name__ == "__main__":
   dset_path = "./data/wikitext/"
+  output_dir_path = "./data/mlmtext/"
   rng = np.random.default_rng(seed=1234)
   config = Config(t_blocks=12,embed_dim=768,attn_heads=12,kv_heads=4,max_seq_len=256)
   o200k_base = tiktoken.get_encoding('o200k_base')
@@ -113,4 +139,4 @@ if __name__ == "__main__":
       "<|sep|>": 200021,
     },
   )
-  get_csv(dset_path,dset_path,enc,rng)
+  get_parquet(dset_path,output_dir_path,2,enc,rng)
