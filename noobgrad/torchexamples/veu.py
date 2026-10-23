@@ -6,7 +6,7 @@ import pyarrow.parquet as pq
 
 import torch
 import torch.nn as nn
-from torch.utils.data import TensorDataset, DataLoader
+from torch.utils.data import DataLoader
 import tiktoken
 import numpy as np
 from datasets import load_dataset, DatasetDict
@@ -18,6 +18,7 @@ FIRST_SPECIAL_TOKEN_ID=199999
 MASK_TOKEN_ID=200019
 CLS_TOKEN_ID=200020
 SEP_TOKEN_ID=200021
+PAD_TOKEN_ID=200022
 
 @dataclass
 class Config:
@@ -26,18 +27,29 @@ class Config:
   attn_heads:int
   kv_heads:int
   max_seq_len:int
+  vocab_size:int
 
 class Veu(nn.Module):
   def __init__(self,config:Config):
+    super().__init__()
+    self.emb = nn.Embedding(config.vocab_size,config.embed_dim)
+    self.pos_emb = nn.Embedding(config.max_seq_len,config.embed_dim)
     self.layers = nn.ModuleList([
       TransformerBlock(config.embed_dim,config.attn_heads,config.kv_heads,config.max_seq_len,dropout=0.1,device='mps')
       for _ in range(config.t_blocks)
     ])
+    self.lm_head = nn.Linear(config.embed_dim,config.vocab_size)
     self.norm = nn.RMSNorm(config.embed_dim)
-  def forward(self,x):
+  def forward(self,x,masked_pos=None):
+    bs,seq_len = x.shape
+    positions = torch.arange(seq_len,device=x.device).unsqueeze(0)
+    x = self.emb(x) + self.pos_emb(positions)
     for layer in self.layers:
       x = layer(x)
-    return self.norm(x)
+    x = self.norm(x)
+    if masked_pos is not None:
+      x = x.gather(1,masked_pos.clamp(min=0).unsqueeze(-1).expand(-1,-1,x.size(-1)))
+    return self.lm_head(x)
 
 def short_hash(s:str,salt:str='veu_v1',n:int=32):
   h = hashlib.blake2b((salt+'|'+s).encode(),digest_size=n//2)
@@ -50,21 +62,21 @@ def bucket(s,salt:str='veu_v1',mod:int=10000):
   h = hashlib.blake2b((salt+'|'+iter_hash).encode(),digest_size=8).digest()
   return int.from_bytes(h,'big') % mod
 
-def rand_tokens(seq:list[int],rng,mlm_prob:float=0.15):
-  seq = seq.copy()
-  n_tokens = len(seq)
-  if n_tokens == 0: return seq,[]
-  n_rand = max(1,int(round(n_tokens*mlm_prob)))
-  rand_indices = rng.choice(n_tokens,size=n_rand,replace=False)
-  for idx in rand_indices:
-    idx_bucket = bucket(int(idx))
-    if idx_bucket < 8000:
-      seq[idx] = MASK_TOKEN_ID
-    elif idx_bucket > 8000 and idx_bucket < 9000:
-      seq[idx] = rng.choice(FIRST_SPECIAL_TOKEN_ID-1,replace=False)
-  masked_tokens = [seq[i] for i in rand_indices]
+def rand_tokens(config:Config,seq:list[int],rng,mlm_prob:float=0.15):
+  seq = seq.copy()[:config.max_seq_len-2]
   seq.insert(0,CLS_TOKEN_ID)
   seq.append(SEP_TOKEN_ID)
+  n_tokens = len(seq)
+  if n_tokens == 0: return seq,[],[]
+  n_rand = max(1,int(round((n_tokens-2)*mlm_prob)))
+  rand_indices = rng.integers(1,n_tokens-1,size=n_rand)
+  masked_tokens = [seq[i] for i in rand_indices]
+  for idx in rand_indices:
+    idx_bucket = bucket(int(idx))
+    if idx_bucket <= 8000 and seq[idx] != CLS_TOKEN_ID and seq[idx] != SEP_TOKEN_ID:
+      seq[idx] = MASK_TOKEN_ID
+    elif 8000 < idx_bucket <= 9000 and seq[idx] != CLS_TOKEN_ID and seq[idx] != SEP_TOKEN_ID:
+      seq[idx] = rng.integers(0,FIRST_SPECIAL_TOKEN_ID)
   return seq,masked_tokens,rand_indices
 
 def split_dset(ds:DatasetDict,only_val:bool=False):
@@ -77,7 +89,7 @@ def split_dset(ds:DatasetDict,only_val:bool=False):
   })
   return ds_splits
 
-def get_parquet(dset_paths:list[str],output_dir_path:str,enc:tiktoken.Encoding,rng,file_idx:int=-1):
+def get_parquet(config:Config,dset_paths:list[str],output_dir_path:str,enc:tiktoken.Encoding,rng,file_idx:int=-1):
   os.makedirs(output_dir_path,exist_ok=True)
   for dset in dset_paths:
     ds = load_dataset(dset)
@@ -93,7 +105,7 @@ def get_parquet(dset_paths:list[str],output_dir_path:str,enc:tiktoken.Encoding,r
         if len(text) < 20: continue
         seq = enc.encode(text)
         if len(seq) < 20: continue
-        masked_seq,masked_tokens,rand_indices = rand_tokens(seq,rng,mlm_prob=0.15)
+        masked_seq,masked_tokens,rand_indices = rand_tokens(config,seq,rng,mlm_prob=0.15)
         input_ids.append(masked_seq)
         masked_pos.append(rand_indices)
         original_tokens.append(masked_tokens)
@@ -107,29 +119,44 @@ def get_parquet(dset_paths:list[str],output_dir_path:str,enc:tiktoken.Encoding,r
       pq.write_table(table,out_file,compression='zstd')
       print(f'wrote {out_file} ({len(input_ids)} examoples)')
 
-def get_tensorset(csv_file:str,batch_size:int,limit:int=-1,delimiter:str=',',shuffle=False) -> DataLoader:
-  import csv
-  seqs = []
-  targets = []
-  with open(csv_file,'r',encoding='utf-8') as file:
-    reader = csv.DictReader(file,delimiter=delimiter)
-    for row in reader:
-      seqs = list(map(int,row['input_ids'].split()))
-      target = list(map(int,row['masked_pos'].split()))
-      seqs.append(seqs)
-      targets.append(target)
-  seqs = torch.tensor(seqs,dtype=torch.long)
-  targets = torch.tensor(targets,dtype=torch.long)
-  dataset = TensorDataset(seqs,targets)
-  if limit != -1: dataset = torch.utils.data.Subset(dataset,range(limit))
-  dataloader = DataLoader(dataset,batch_size=batch_size,shuffle=shuffle)
-  return dataloader
+def collate_fn(batch):
+  input_ids = [torch.tensor(x['input_ids'],dtype=torch.long) for x in batch]
+  masked_pos = [torch.tensor(x['masked_pos'],dtype=torch.long) for x in batch]
+  labels = [torch.tensor(x['labels'],dtype=torch.long) for x in batch]
+  return {
+    'input_ids': nn.utils.rnn.pad_sequence(input_ids,batch_first=True,padding_value=PAD_TOKEN_ID),
+    'masked_pos': nn.utils.rnn.pad_sequence(masked_pos,batch_first=True,padding_value=-1),
+    'labels': nn.utils.rnn.pad_sequence(labels,batch_first=True,padding_value=-100),
+  }
+
+def get_tensorset(dset_path:str,batch_size:int):
+  ds = load_dataset('parquet',data_dir=dset_path)
+  train_loader = DataLoader(ds['train'].with_format(None),batch_size=batch_size,shuffle=True,pin_memory=True,collate_fn=collate_fn)
+  val_loader = DataLoader(ds['validation'].with_format(None),batch_size=batch_size,shuffle=True,pin_memory=True,collate_fn=collate_fn)
+  test_loader = DataLoader(ds['test'].with_format(None),batch_size=batch_size,shuffle=True,pin_memory=True,collate_fn=collate_fn)
+  return train_loader,val_loader,test_loader
+
+def train(config:Config,dset_path:str):
+  model = Veu(config=config).to('mps')
+  optim = torch.optim.Adam(model.parameters(),lr=7e-4)
+  criterion = nn.CrossEntropyLoss(ignore_index=-100)
+  trainloader,valloader,testloader = get_tensorset(dset_path,batch_size=32)
+  epochs = 10
+  for epoch in range(epochs):
+    for batch in trainloader:
+      X = batch['input_ids'].to('mps')
+      idx = batch['masked_pos'].to('mps')
+      y = batch['labels'].to('mps')
+      print(X.shape)
+      print(idx.shape)
+      print(y.shape)
+      
+
 
 if __name__ == "__main__":
-  dset_paths = ["./data/wikitext/"]
+  dset_paths = ['rojagtap/bookcorpus']
   output_dir_path = "./data/mlmtext/"
   rng = np.random.default_rng(seed=1234)
-  config = Config(t_blocks=12,embed_dim=768,attn_heads=12,kv_heads=4,max_seq_len=256)
   o200k_base = tiktoken.get_encoding('o200k_base')
   enc = tiktoken.Encoding(
     name='o200k_im',
@@ -140,6 +167,9 @@ if __name__ == "__main__":
       "<|mask|>": 200019,
       "<|cls|>": 200020,
       "<|sep|>": 200021,
+      "<|pad|>": 200022,
     },
   )
-  get_parquet(dset_paths,output_dir_path,enc,rng,file_idx=2)
+  config = Config(t_blocks=12,embed_dim=768,attn_heads=12,kv_heads=4,max_seq_len=256,vocab_size=enc.n_vocab)
+  # get_parquet(config,dset_paths,output_dir_path,enc,rng,file_idx=2)
+  train(config=config,dset_path='./data/mlmtext')

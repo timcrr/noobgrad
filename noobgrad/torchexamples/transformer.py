@@ -92,9 +92,9 @@ class DecoderLayer(nn.Module):
     return x + self.dropout(self.ffn(self.ffn_norm(x)))
 
 class TransformerBlock(nn.Module):
-  def __init__(self,embed_dim,attn_heads,kv_heads,max_seq_len,dropout:float=0.0,flash:bool=True,device:str=torch.accelerator.current_accelerator().type):
+  def __init__(self,embed_dim,attn_heads,kv_heads,max_seq_len,dropout:float=0.0,causal:bool=False,flash:bool=True,device:str=torch.accelerator.current_accelerator().type):
     super().__init__()
-    self.self_attn = MultiHeadAttention(embed_dim,attn_heads,kv_heads,max_seq_len,dropout=dropout,causal=True,flash=flash,device=device)
+    self.self_attn = MultiHeadAttention(embed_dim,attn_heads,kv_heads,max_seq_len,dropout=dropout,causal=causal,flash=flash,device=device)
     self.ffn = SwiGLU(embed_dim)
     self.attn_norm = nn.RMSNorm(embed_dim)
     self.ffn_norm = nn.RMSNorm(embed_dim)
