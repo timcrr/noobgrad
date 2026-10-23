@@ -4,14 +4,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class MultiHeadAttention(nn.Module):
-  def __init__(self, embed_dim, num_heads, dropout:float=0.0, causal:bool=False, flash:bool=False, device:str=torch.accelerator.current_accelerator().type):
+  def __init__(self,embed_dim,num_heads,kv_heads,max_seq_len:int=2048,dropout:float=0.0,causal:bool=False,flash:bool=False,device:str=torch.accelerator.current_accelerator().type):
     super().__init__()
     self.device = device
     if embed_dim % num_heads != 0: raise ValueError("embed dim should be divisible by num heads")
-    if num_heads % 8 != 0: raise ValueError("num heads should be divisible by num kv heads")
+    if num_heads % kv_heads != 0: raise ValueError("num heads should be divisible by num kv heads")
     self.embed_dim = embed_dim
     self.query_heads = num_heads
-    self.kv_heads = num_heads // 8 if flash else num_heads
+    self.kv_heads = kv_heads if flash else num_heads
     self.head_dim = embed_dim // num_heads
 
     self.q_proj = nn.Linear(embed_dim,self.query_heads*self.head_dim,bias=False)
@@ -57,7 +57,7 @@ class MultiHeadAttention(nn.Module):
     return self.out_proj(self._merge_heads(attn_out,bs,Tq))
 
 class SwiGLU(nn.Module):
-  def __init__(self, embed_dim):
+  def __init__(self,embed_dim):
     super().__init__()
     self.gate_proj = nn.Linear(embed_dim,embed_dim*4,bias=False)
     self.up_proj = nn.Linear(embed_dim,embed_dim*4,bias=False)
@@ -66,43 +66,52 @@ class SwiGLU(nn.Module):
     return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
 
 class EncoderLayer(nn.Module):
-  def __init__(self, embed_dim, attn_heads, dropout:float=0.0, flash:bool=False, device:str=torch.accelerator.current_accelerator().type):
+  def __init__(self,embed_dim,attn_heads,kv_heads,max_seq_len,dropout:float=0.0,flash:bool=False,device:str=torch.accelerator.current_accelerator().type):
     super().__init__()
-    self.self_attn = MultiHeadAttention(embed_dim, attn_heads, dropout=dropout, causal=False, flash=flash, device=device)
+    self.self_attn = MultiHeadAttention(embed_dim,attn_heads,kv_heads,max_seq_len,dropout=dropout,causal=False,flash=flash,device=device)
     self.ffn = SwiGLU(embed_dim)
-    self.ln = nn.LayerNorm(embed_dim)
+    self.attn_norm = nn.LayerNorm(embed_dim)
+    self.ffn_norm = nn.LayerNorm(embed_dim)
     self.dropout = nn.Dropout(dropout)
   def forward(self,x):
-    x = x + self.dropout(self.self_attn(self.ln(x)))
-    return x + self.dropout(self.ffn(self.ln(x)))
+    x = x + self.dropout(self.self_attn(self.attn_norm(x)))
+    return x + self.dropout(self.ffn(self.ffn_norm(x)))
 
 class DecoderLayer(nn.Module):
-  def __init__(self, embed_dim, attn_heads, dropout:float=0.0, flash:bool=False, device:str=torch.accelerator.current_accelerator().type):
+  def __init__(self,embed_dim,attn_heads,kv_heads,max_seq_len,dropout:float=0.0,flash:bool=False,device:str=torch.accelerator.current_accelerator().type):
     super().__init__()
-    self.self_attn = MultiHeadAttention(embed_dim, attn_heads, dropout=dropout, causal=True, flash=flash, device=device)
-    self.cross_attn = MultiHeadAttention(embed_dim, attn_heads, dropout=dropout, causal=False, flash=flash, device=device)
+    self.self_attn = MultiHeadAttention(embed_dim,attn_heads,kv_heads,max_seq_len,dropout=dropout,causal=True,flash=flash,device=device)
+    self.cross_attn = MultiHeadAttention(embed_dim,attn_heads,kv_heads,max_seq_len,dropout=dropout,causal=False,flash=flash,device=device)
     self.ffn = SwiGLU(embed_dim)
-    self.ln = nn.LayerNorm(embed_dim)
+    self.attn_norm = nn.LayerNorm(embed_dim)
+    self.ffn_norm = nn.LayerNorm(embed_dim)
     self.dropout = nn.Dropout(dropout)
   def forward(self,x,enc_out):
-    x = x + self.dropout(self.self_attn(self.ln(x)))
-    x = x + self.dropout(self.cross_attn(query=self.ln(x), key=enc_out, value=enc_out))
-    return x + self.dropout(self.ffn(self.ln(x)))
+    x = x + self.dropout(self.self_attn(self.attn_norm(x)))
+    x = x + self.dropout(self.cross_attn(query=self.attn_norm(x), key=enc_out, value=enc_out))
+    return x + self.dropout(self.ffn(self.ffn_norm(x)))
+
+class TransformerBlock(nn.Module):
+  def __init__(self,embed_dim,attn_heads,kv_heads,max_seq_len,dropout:float=0.0,flash:bool=True,device:str=torch.accelerator.current_accelerator().type):
+    super().__init__()
+    self.self_attn = MultiHeadAttention(embed_dim,attn_heads,kv_heads,max_seq_len,dropout=dropout,causal=True,flash=flash,device=device)
+    self.ffn = SwiGLU(embed_dim)
+    self.attn_norm = nn.RMSNorm(embed_dim)
+    self.ffn_norm = nn.RMSNorm(embed_dim)
+    self.dropout = nn.Dropout(dropout)
+  def forward(self,x):
+    x = x + self.dropout(self.self_attn(self.attn_norm(x)))
+    return x + self.dropout(self.ffn(self.ffn_norm(x)))
 
 class Transformer(nn.Module):
-  def __init__(self, num_layers, embed_dim, attn_heads, dropout:float=0.0, flash:bool=False, device:str=torch.accelerator.current_accelerator().type):
+  def __init__(self,num_layers,embed_dim,attn_heads,kv_heads,max_seq_len,dropout:float=0.0,flash:bool=True,device:str=torch.accelerator.current_accelerator().type):
     super().__init__()
-    self.enc_layers = nn.ModuleList([
-      EncoderLayer(embed_dim,attn_heads,dropout,flash=flash,device=device) for _ in range(num_layers)
+    self.layers = nn.ModuleList([
+      TransformerBlock(embed_dim,attn_heads,kv_heads,max_seq_len,dropout=dropout,flash=flash,device=device)
+      for _ in range(num_layers)
     ])
-    self.dec_layers = nn.ModuleList([
-      DecoderLayer(embed_dim,attn_heads,dropout,flash=flash,device=device) for _ in range(num_layers)
-    ])
-    self.ln = nn.LayerNorm(embed_dim)
-  def forward(self,src,tgt):
-    for layer in self.enc_layers:
-      src = layer(src)
-    enc_out = src
-    for layer in self.dec_layers:
-      tgt = layer(tgt,enc_out)
-    return self.ln(tgt)
+    self.norm = nn.RMSNorm(embed_dim)
+  def forward(self,x):
+    for layer in self.layers:
+      x = layer(x)
+    return self.norm(x)
